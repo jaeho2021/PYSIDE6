@@ -1,3 +1,4 @@
+import os
 import sys
 import serial
 import threading
@@ -6,7 +7,7 @@ import re
 import queue
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QLineEdit, QVBoxLayout, QWidget, QTabWidget, QPushButton, QMenu, QDialog,
-    QFormLayout, QComboBox, QDialogButtonBox, QLabel )
+    QFormLayout, QComboBox, QDialogButtonBox, QLabel, QCompleter )
 from PySide6.QtCore import Signal, QObject, Qt
 from PySide6.QtGui import QAction, QShortcut, QKeySequence, QTextCursor, QTextCharFormat, QColor
 
@@ -115,9 +116,14 @@ class SerialThread(QObject):
         self.running = False
         if self.serial and self.serial.is_open:
             self.serial.close()  # 시리얼 연결 종료
+
     def send_data(self, data):
         if self.serial and self.serial.is_open:
-            self.data_to_send_signal.emit(data)
+            try:
+                self.serial.write((data + '\n').encode('utf-8'))  # Add newline character
+                self.serial.flush()  # Ensure data is sent immediately
+            except serial.SerialException as e:
+                self.data_to_send_signal.emit(data)
 
 
 class SerialSettingsDialog(QDialog):
@@ -156,6 +162,12 @@ class SerialSettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.send_data_history = []
+        # 데이터 파일 경로
+        self.data_file = ".send_data_history.txt"
+        # 데이터 로드
+        self.load_send_data_history()
+
         self.setWindowTitle("Serial Logger with Keyword Filter")
 
         # Menu Bar Setup
@@ -190,6 +202,20 @@ class MainWindow(QMainWindow):
         self.shortcut.activated.connect(self.show_search_dialog)
 
         #self.update_window_title()
+
+    def load_send_data_history(self):
+        """파일에서 send_data_history를 로드합니다."""
+        if os.path.exists(self.data_file):
+            with open(self.data_file, "r", encoding="utf-8") as file:
+                self.send_data_history = [line.strip() for line in file.readlines()]
+        else:
+            self.send_data_history = []
+
+    def save_send_data_history(self):
+        """send_data_history를 파일에 저장합니다."""
+        with open(self.data_file, "w", encoding="utf-8") as file:
+            for data in self.send_data_history:
+                file.write(f"{data}\n")
 
     def update_window_title(self):
         """Updates the window title with the current serial port and baud rate."""
@@ -263,6 +289,15 @@ class MainWindow(QMainWindow):
         self.log_output.setReadOnly(True)
         self.log_output.setStyleSheet("background-color: black; color: gray;")
 
+        # Create the QLineEdit for data input
+        completer = QCompleter(self.send_data_history)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+
+        self.data_input = QLineEdit()
+        self.data_input.setPlaceholderText("Enter data to send...")
+        self.data_input.setCompleter(completer)
+        self.data_input.returnPressed.connect(self.send_data)
+
         # Connect the keyword input to filter updates
         self.keyword_input.textChanged.connect(self.filter_log)
 
@@ -270,6 +305,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addWidget(self.keyword_input)
         layout.addWidget(self.log_output)
+        layout.addWidget(self.data_input)
 
         self.log_tab.setLayout(layout)
 
@@ -282,11 +318,21 @@ class MainWindow(QMainWindow):
         self.extra_tab.setLayout(layout)
 
     def send_data(self):
-        data = self.input_field.text()
+        data = self.data_input.text()
         if data:
             self.serial_thread.send_data(data)
             self.update_log(f"Sent: {data}")
-            self.input_field.clear()
+            self.data_input.clear()
+
+            # Add the data to the send_data_history
+            if data not in self.send_data_history:
+                self.send_data_history.append(data)
+                # Update the completer's model to include the new data
+                completer = self.data_input.completer()
+                completer.model().setStringList(self.send_data_history)
+
+            # Save the updated send_data_history to the file
+            self.save_send_data_history()
 
     def update_log(self, message):
         """Appends message to the log output area."""
