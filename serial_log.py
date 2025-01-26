@@ -7,7 +7,7 @@ import re
 import queue
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QLineEdit, QVBoxLayout, QWidget, QTabWidget, QPushButton, QMenu, QDialog,
-    QFormLayout, QComboBox, QDialogButtonBox, QLabel, QCompleter , QMessageBox, QHBoxLayout )
+    QFormLayout, QComboBox, QDialogButtonBox, QLabel, QCompleter , QMessageBox, QHBoxLayout, QFileDialog, QInputDialog )
 from PySide6.QtCore import Signal, QObject, Qt
 from PySide6.QtGui import QAction, QShortcut, QKeySequence, QTextCursor, QTextCharFormat, QColor, QTextDocument
 
@@ -184,16 +184,19 @@ class SerialSettingsDialog(QDialog):
         self.setLayout(self.layout)
 
     def get_settings(self):
-        """Returns the serial port and baud rate selected by the user."""
+        """Returns the serial port, baud rate, and output file name selected by the user."""
         port = self.port_input.text()
         baudrate = int(self.baudrate_input.currentText())
-        window.setWindowTitle(f"Serial Logger - {port} @ {baudrate} baud")
         return port, baudrate
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.max_log_lines = 10000
+
+        self.output_file = "output_log.txt"
+
         self.last_cursor_position = None
         self.search_text = None
 
@@ -206,7 +209,7 @@ class MainWindow(QMainWindow):
         # 데이터 로드
         self.load_send_data_history()
 
-        self.setWindowTitle("Serial Logger with Keyword Filter")
+        self.setWindowTitle("Serial Logger V0.2")
 
         # Menu Bar Setup
         self.create_menu()
@@ -241,6 +244,34 @@ class MainWindow(QMainWindow):
 
         #self.update_window_title()
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_F1:  # F1 키 확인 (통신 연결)
+            self.start_serial_connection()  # 통신 연결 시작
+            self.update_window_title()
+        elif event.key() == Qt.Key_F2:  # F2 키 확인 (통신 해지)
+            self.stop_serial_connection()  # 통신 연결 해지
+            self.setWindowTitle(f"Serial Logger - Disconnected")
+        elif event.key() == Qt.Key_F5:  # F5 키 확인 (로그 클리어)
+            self.log_output.clear()  # 로그 클리어
+        else:
+            super().keyPressEvent(event)  # 다른 키는 기본 동작 수행
+
+    def start_serial_connection(self):
+        """Start serial connection using the current serial settings."""
+        if not self.serial_thread.running:
+            self.serial_thread.start()
+            self.update_log("Serial connection established.")
+        else:
+            self.update_log("Serial connection already active.")
+
+    def stop_serial_connection(self):
+        """Stop the serial connection."""
+        if self.serial_thread.running:
+            self.serial_thread.stop()
+            self.update_log("Serial connection stopped.")
+        else:
+            self.update_log("No active serial connection to stop.")
+
     def load_send_data_history(self):
         """파일에서 send_data_history를 로드합니다."""
         if os.path.exists(self.data_file):
@@ -265,12 +296,22 @@ class MainWindow(QMainWindow):
         """Create the menu bar with a 'Settings' menu."""
         menubar = self.menuBar()
         # Create the 'Settings' menu
-        settings_menu = menubar.addMenu('Settings')
+        file_menu = menubar.addMenu('File')
+        # Save Log Action
+        save_log_action = QAction('Save Log', self)
+        save_log_action.triggered.connect(self.save_log_to_file)
+        file_menu.addAction(save_log_action)
+
+        set_max_lines_action = QAction("Set Max Log Lines", self)
+        set_max_lines_action.triggered.connect(self.set_max_log_lines)
+        file_menu.addAction(set_max_lines_action)
+
+        configure_menu = menubar.addMenu('Configuration')
         # Create an action for 'Settings'
-        settings_action = QAction('Settings', self)
+        settings_action = QAction('Port', self)
         settings_action.triggered.connect(self.show_settings)
         # Add the 'Settings' action to the menu
-        settings_menu.addAction(settings_action)
+        configure_menu.addAction(settings_action)
 
     def show_search_dialog(self):
         self.dialog = SearchDialog(self)
@@ -440,6 +481,56 @@ class MainWindow(QMainWindow):
         text = line['text']
         self.log_output.append(text)  # Display each line in QTextEdit
 
+    def save_log_to_file(self):
+        """log_output의 내용을 사용자가 선택한 파일에 저장"""
+        options = QFileDialog.Options()
+        options |= QFileDialog.DontUseNativeDialog  # 플랫폼 기본 대화 상자를 사용하지 않음 (선택 사항)
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Log File",  # 대화 상자 제목
+            "",  # 기본 경로 (빈 문자열이면 현재 경로)
+            "Text Files (*.txt);;All Files (*)",  # 파일 필터
+            options=options
+        )
+
+        # 사용자가 파일 저장 취소 시 처리
+        if not file_path:
+            return  # 아무 동작도 하지 않음
+
+        try:
+            # log_output의 내용을 선택한 파일에 저장
+            with open(file_path, 'w', encoding='utf-8') as file:
+                file.write(self.log_output.toPlainText())
+            QMessageBox.information(self, "Success", f"Log saved to {file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save log: {e}")
+
+    def set_max_log_lines(self):
+        max_lines, ok = QInputDialog.getInt(
+            self,
+            "Set Max Log Lines",
+            "Enter maximum log lines:",
+            value=self.max_log_lines,
+            minValue=1,
+            maxValue=1000000,
+            step=1,
+        )
+        if ok:
+            self.max_log_lines = max_lines
+            print(f"Max log lines set to: {self.max_log_lines}")
+
+    # 로그 추가 메서드 (최대 라인 제한 적용)
+    def append_log(self, text):
+        current_logs = self.log_output.toPlainText().split("\n")
+        current_logs.append(text)
+
+        # 최대 라인 제한에 맞게 리스트를 자릅니다.
+        if len(current_logs) > self.max_log_lines:
+            current_logs = current_logs[-self.max_log_lines :]
+
+        # 텍스트 업데이트
+        self.log_output.setPlainText("\n".join(current_logs))
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
