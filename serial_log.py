@@ -6,10 +6,34 @@ import re
 import queue
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QLineEdit, QVBoxLayout, QWidget, QTabWidget, QPushButton, QMenu, QDialog,
-    QFormLayout, QComboBox, QDialogButtonBox )
+    QFormLayout, QComboBox, QDialogButtonBox, QLabel )
 from PySide6.QtCore import Signal, QObject, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QShortcut, QKeySequence, QTextCursor, QTextCharFormat, QColor
 
+
+class SearchDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Find Text")
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setFixedSize(300, 100)
+
+        self.layout = QVBoxLayout()
+        self.label = QLabel("Enter text to find:")
+        self.layout.addWidget(self.label)
+
+        self.search_input = QLineEdit()
+        self.layout.addWidget(self.search_input)
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        self.layout.addWidget(self.buttons)
+
+        self.setLayout(self.layout)
+
+    def get_search_text(self):
+        return self.search_input.text()
 
 class SerialRXThread(threading.Thread):
     def __init__(self, serial_connection, data_received_signal):
@@ -161,6 +185,10 @@ class MainWindow(QMainWindow):
         # Store the original log text for restoring
         self.original_log = []
 
+        # Ctrl + F 단축키 설정
+        self.shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        self.shortcut.activated.connect(self.show_search_dialog)
+
         #self.update_window_title()
 
     def update_window_title(self):
@@ -179,6 +207,35 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self.show_settings)
         # Add the 'Settings' action to the menu
         settings_menu.addAction(settings_action)
+
+    def show_search_dialog(self):
+        dialog = SearchDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            search_text = dialog.get_search_text()
+            if search_text:
+                self.find_and_highlight_text(search_text)
+
+    def find_and_highlight_text(self, search_text):
+        cursor = self.log_output.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+        self.log_output.setTextCursor(cursor)
+
+        # 기존 하이라이트 제거
+        extra_selections = []
+        self.log_output.setExtraSelections(extra_selections)
+
+        if not search_text:
+            return
+
+        # 새로운 하이라이트 적용
+        color = QColor(Qt.yellow)
+        while self.log_output.find(search_text):
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = self.log_output.textCursor()
+            selection.format.setBackground(color)
+            extra_selections.append(selection)
+
+        self.log_output.setExtraSelections(extra_selections)
 
     def show_settings(self):
         """Show the serial settings dialog when the user clicks 'Settings'."""
