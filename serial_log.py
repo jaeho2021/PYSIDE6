@@ -7,7 +7,8 @@ import re
 import queue
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QLineEdit, QVBoxLayout, QWidget, QTabWidget, QPushButton, QMenu, QDialog,
-    QFormLayout, QComboBox, QDialogButtonBox, QLabel, QCompleter , QMessageBox, QHBoxLayout, QFileDialog, QInputDialog )
+    QFormLayout, QComboBox, QDialogButtonBox, QLabel, QCompleter , QMessageBox, QHBoxLayout, QFileDialog, QInputDialog,
+    QListWidget )
 from PySide6.QtCore import Signal, QObject, Qt
 from PySide6.QtGui import QAction, QShortcut, QKeySequence, QTextCursor, QTextCharFormat, QColor, QTextDocument
 
@@ -189,6 +190,63 @@ class SerialSettingsDialog(QDialog):
         baudrate = int(self.baudrate_input.currentText())
         return port, baudrate
 
+class SendHistoryDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Send Data History")
+        self.layout = QVBoxLayout()
+        # QListWidget 추가
+        self.list_widget = QListWidget(self)
+        self.layout.addWidget(self.list_widget)
+
+        # 파일에서 항목 읽어오기
+        self.load_history_from_file(".send_data_history.txt")
+
+        self.list_widget.itemDoubleClicked.connect(self.on_item_double_click)
+
+        self.setLayout(self.layout)
+
+    def on_item_double_click(self, item):
+        """리스트 항목을 더블 클릭하면 해당 데이터를 시리얼로 전송"""
+        data = item.text()  # 더블 클릭한 항목의 텍스트
+        print(f"Sending data: {data}")
+        
+        if data:
+            window.serial_thread.send_data(data)
+            window.update_log(f"Sent: {data}")
+            window.data_input.clear()
+
+            # Add the data to the send_data_history
+            if data not in window.send_data_history:
+                #self.send_data_history.append(data)
+                window.send_data_history.insert(0, data)
+                # Update the completer's model to include the new data
+                completer = window.data_input.completer()
+                completer.model().setStringList(self.window.send_data_history)
+            else:
+                window.send_data_history.remove(data)
+                window.send_data_history.insert(0, data)
+            # Save the updated send_data_history to the file
+
+            window.save_send_data_history()
+            window.send_data_history_dialog.load_history_from_file(window.data_file)
+
+    def load_history_from_file(self, file_name):
+        """파일에서 항목을 읽어와서 QListWidget에 새로 추가 (최근 데이터 맨 위로)"""
+        try:
+            # 기존 항목 모두 삭제
+            self.list_widget.clear()
+            
+            with open(file_name, 'r') as file:
+                lines = file.readlines()
+                
+                # 파일에서 읽은 각 줄을 리스트 항목으로 맨 위에 추가
+                for line in reversed(lines):  # 최신 항목을 위로
+                    self.list_widget.insertItem(0, line.strip())  # 0번 인덱스에 추가
+        except FileNotFoundError:
+            print(f"Error: The file '{file_name}' was not found.")
+        except Exception as e:
+            print(f"Error: {e}")
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -313,6 +371,12 @@ class MainWindow(QMainWindow):
         # Add the 'Settings' action to the menu
         configure_menu.addAction(settings_action)
 
+        view_menu = menubar.addMenu('View')
+        send_history = QAction('send data history', self)
+        send_history.triggered.connect(self.send_history_fn)
+        # Add the 'Settings' action to the menu
+        view_menu.addAction(send_history)
+
     def show_search_dialog(self):
         self.dialog = SearchDialog(self)
         self.dialog.next_signal.connect(self.find_next)
@@ -375,6 +439,13 @@ class MainWindow(QMainWindow):
                 cursor.setPosition(self.last_cursor_position)
                 self.log_output.setTextCursor(cursor)
                 self.find_previous()
+
+    def send_history_fn(self):
+        """ history of send data """
+        self.send_data_history_dialog = SendHistoryDialog(self)
+        self.send_data_history_dialog.setModal(False)
+        self.send_data_history_dialog.show()
+
 
     def show_settings(self):
         """Show the serial settings dialog when the user clicks 'Settings'."""
@@ -439,13 +510,18 @@ class MainWindow(QMainWindow):
 
             # Add the data to the send_data_history
             if data not in self.send_data_history:
-                self.send_data_history.append(data)
+                #self.send_data_history.append(data)
+                self.send_data_history.insert(0, data)
                 # Update the completer's model to include the new data
                 completer = self.data_input.completer()
                 completer.model().setStringList(self.send_data_history)
-
+            else:
+                self.send_data_history.remove(data)
+                self.send_data_history.insert(0, data)
             # Save the updated send_data_history to the file
+
             self.save_send_data_history()
+            self.send_data_history_dialog.load_history_from_file(self.data_file)
 
     def update_log(self, message):
         """Appends message to the log output area."""
