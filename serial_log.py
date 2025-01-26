@@ -7,31 +7,63 @@ import re
 import queue
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QLineEdit, QVBoxLayout, QWidget, QTabWidget, QPushButton, QMenu, QDialog,
-    QFormLayout, QComboBox, QDialogButtonBox, QLabel, QCompleter )
+    QFormLayout, QComboBox, QDialogButtonBox, QLabel, QCompleter , QMessageBox, QHBoxLayout )
 from PySide6.QtCore import Signal, QObject, Qt
-from PySide6.QtGui import QAction, QShortcut, QKeySequence, QTextCursor, QTextCharFormat, QColor
+from PySide6.QtGui import QAction, QShortcut, QKeySequence, QTextCursor, QTextCharFormat, QColor, QTextDocument
 
 
 class SearchDialog(QDialog):
+    next_signal = Signal()
+    prev_signal = Signal()
+    text_changed_signal = Signal(str)  # 텍스트 변경 시그널 추가
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Find Text")
         self.setWindowModality(Qt.ApplicationModal)
-        self.setFixedSize(300, 100)
 
+        # 레이아웃 설정
         self.layout = QVBoxLayout()
+        self.layout.setSpacing(5)
+
+        # 라벨
         self.label = QLabel("Enter text to find:")
         self.layout.addWidget(self.label)
 
+        # 검색 입력란
         self.search_input = QLineEdit()
+        self.search_input.textChanged.connect(self.on_text_changed)  # 텍스트 변경 시 시그널 발생
         self.layout.addWidget(self.search_input)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.buttons.accepted.connect(self.accept)
-        self.buttons.rejected.connect(self.reject)
-        self.layout.addWidget(self.buttons)
+        # Next and Previous buttons for searching
+        self.next_button = QPushButton("Next")
+        self.prev_button = QPushButton("Previous")
+        self.next_button.clicked.connect(self.next_clicked)
+        self.prev_button.clicked.connect(self.prev_clicked)
+
+        # 버튼 레이아웃
+        self.button_layout = QHBoxLayout()
+        self.button_layout.addWidget(self.prev_button)
+        self.button_layout.addWidget(self.next_button)
+        self.layout.addLayout(self.button_layout)
 
         self.setLayout(self.layout)
+
+        # 다이얼로그의 테두리 없애기
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)  # 테두리 없는 창
+        self.setAttribute(Qt.WA_TranslucentBackground)  # 배경을 투명하게 설정 (선택 사항)
+
+    def next_clicked(self):
+        """Emits signal for the next search direction."""
+        self.next_signal.emit()
+
+    def prev_clicked(self):
+        """Emits signal for the previous search direction."""
+        self.prev_signal.emit()
+
+    def on_text_changed(self, text):
+        """Emits signal when text is changed to update search text in MainWindow."""
+        self.text_changed_signal.emit(text)
 
     def get_search_text(self):
         return self.search_input.text()
@@ -162,6 +194,12 @@ class SerialSettingsDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.last_cursor_position = None
+        self.search_text = None
+
+        self.search_text = ""  # Add search_text as an instance variable
+        self.current_match_index = -1  # Track the current match index
+
         self.send_data_history = []
         # 데이터 파일 경로
         self.data_file = ".send_data_history.txt"
@@ -235,33 +273,67 @@ class MainWindow(QMainWindow):
         settings_menu.addAction(settings_action)
 
     def show_search_dialog(self):
-        dialog = SearchDialog(self)
-        if dialog.exec() == QDialog.Accepted:
-            search_text = dialog.get_search_text()
-            if search_text:
-                self.find_and_highlight_text(search_text)
+        self.dialog = SearchDialog(self)
+        self.dialog.next_signal.connect(self.find_next)
+        self.dialog.prev_signal.connect(self.find_previous)
+        self.dialog.text_changed_signal.connect(self.update_search_text)
+        self.dialog.exec()
 
-    def find_and_highlight_text(self, search_text):
-        cursor = self.log_output.textCursor()
-        cursor.movePosition(QTextCursor.Start)
-        self.log_output.setTextCursor(cursor)
+    def update_search_text(self, text):
+        """Search text를 자동으로 업데이트."""
+        self.search_text = text
+        self.current_match_index = -1  # 새로운 검색을 시작할 때마다 인덱스 리셋
+        #self.find_next()  # 텍스트가 변경될 때마다 자동으로 next 검색
 
-        # 기존 하이라이트 제거
-        extra_selections = []
-        self.log_output.setExtraSelections(extra_selections)
-
-        if not search_text:
+    def find_next(self):
+        search_text = self.dialog.search_input.text().strip()
+        if not self.search_text:
             return
 
-        # 새로운 하이라이트 적용
-        color = QColor(Qt.yellow)
-        while self.log_output.find(search_text):
-            selection = QTextEdit.ExtraSelection()
-            selection.cursor = self.log_output.textCursor()
-            selection.format.setBackground(color)
-            extra_selections.append(selection)
+        cursor = self.log_output.textCursor()
+        document = self.log_output.document()
 
-        self.log_output.setExtraSelections(extra_selections)
+        # 현재 커서 위치에서 검색 시작
+        start_pos = cursor.position()
+        cursor = document.find(search_text, start_pos)
+
+        if cursor.isNull():
+            # 처음부터 다시 검색
+            cursor = document.find(search_text, 0)
+
+        if not cursor.isNull():
+            self.log_output.setTextCursor(cursor)
+            self.log_output.ensureCursorVisible()
+        else:
+            QMessageBox.information(self, "Search", "No matches found.")
+
+    def find_previous(self):
+        search_text = self.dialog.search_input.text()
+
+        # 처음 검색이거나 검색 텍스트가 변경된 경우
+        if search_text != self.search_text:
+            self.search_text = search_text
+        self.last_cursor_position = len(self.log_output.toPlainText())  # 새 검색은 텍스트의 끝에서 시작
+
+        print(self.last_cursor_position)
+        if search_text:
+            cursor = self.log_output.textCursor()
+            cursor.setPosition(self.last_cursor_position)  # 마지막 검색 위치에서 시작
+
+            # 역방향으로 텍스트 찾기
+            found = self.log_output.find(search_text, QTextDocument.FindBackward)
+
+            if found:
+                self.last_cursor_position = cursor.position()  # 찾은 위치 저장
+                print(f"Found '{search_text}' at position {self.last_cursor_position}")
+            else:
+                # 더 이상 찾을 수 없으면 텍스트 끝에서 다시 시작
+                print("No more occurrences found. Searching from the end again.")
+                # 텍스트 끝에서 검색을 시작하도록 커서 위치를 초기화
+                self.last_cursor_position = len(self.log_output.toPlainText())  # 텍스트 끝에서 다시 시작
+                cursor.setPosition(self.last_cursor_position)
+                self.log_output.setTextCursor(cursor)
+                self.find_previous()
 
     def show_settings(self):
         """Show the serial settings dialog when the user clicks 'Settings'."""
