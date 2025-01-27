@@ -8,8 +8,8 @@ import queue
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTextEdit, QLineEdit, QVBoxLayout, QWidget, QTabWidget, QPushButton, QMenu, QDialog,
     QFormLayout, QComboBox, QDialogButtonBox, QLabel, QCompleter , QMessageBox, QHBoxLayout, QFileDialog, QInputDialog,
-    QListWidget )
-from PySide6.QtCore import Signal, QObject, Qt
+    QListWidget, QTextBrowser )
+from PySide6.QtCore import Signal, QObject, Qt, QTimer
 from PySide6.QtGui import QAction, QShortcut, QKeySequence, QTextCursor, QTextCharFormat, QColor, QTextDocument
 
 
@@ -248,23 +248,50 @@ class SendHistoryDialog(QDialog):
         except Exception as e:
             print(f"Error: {e}")
 
+class SearchDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Search Log")
+        self.setModal(False)  # 모달리스 다이얼로그로 설정
+        self.layout = QVBoxLayout()
+
+        # 검색어 입력 필드
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Enter keyword to filter...")
+        self.layout.addWidget(self.search_input)
+
+        # 검색 결과를 표시할 QTextBrowser
+        self.filtered_log = QTextBrowser()
+        self.filtered_log.setOpenLinks(False)  # 링크 클릭 이벤트를 직접 처리
+        self.filtered_log.anchorClicked.connect(self.on_filtered_log_clicked)
+        self.layout.addWidget(self.filtered_log)
+
+        # 닫기 버튼
+        self.close_button = QPushButton("Close")
+        self.close_button.clicked.connect(self.close)
+        self.layout.addWidget(self.close_button)
+
+        self.setLayout(self.layout)
+
+    def on_filtered_log_clicked(self, link):
+        """Handle clicks on filtered log items."""
+        line_number = int(link.toString())  # Get the line number from the link
+        self.parent().move_to_line(line_number)  # 부모 창의 메서드를 호출하여 커서 이동
+
+    def update_filtered_log(self, filtered_data):
+        """Update the filtered log display."""
+        self.filtered_log.setHtml("<br>".join(filtered_data))
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.max_log_lines = 10000
-
         self.output_file = "output_log.txt"
-
         self.last_cursor_position = None
-        self.search_text = None
-
-        self.search_text = ""  # Add search_text as an instance variable
-        self.current_match_index = -1  # Track the current match index
-
+        self.search_text = ""
+        self.current_match_index = -1
         self.send_data_history = []
-        # 데이터 파일 경로
         self.data_file = ".send_data_history.txt"
-        # 데이터 로드
         self.load_send_data_history()
 
         self.setWindowTitle("Serial Logger V0.2")
@@ -300,8 +327,101 @@ class MainWindow(QMainWindow):
         self.shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
         self.shortcut.activated.connect(self.show_search_dialog)
 
-        #self.update_window_title()
+    def setup_log_tab(self):
+        # Create the keyword filter input field
+        self.keyword_input = QLineEdit()
+        self.keyword_input.setPlaceholderText("Enter keyword to filter...")
+        # Connect the keyword input to filter updates
+        self.keyword_input.textChanged.connect(self.filtered_log)
 
+        # Create the QTextEdit for log output
+        self.log_output = QTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setStyleSheet("background-color: black; color: gray;")
+
+        # Create the QLineEdit for data input
+        completer = QCompleter(self.send_data_history)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+
+        self.data_input = QLineEdit()
+        self.data_input.setPlaceholderText("Enter data to send...")
+        self.data_input.setCompleter(completer)
+        self.data_input.returnPressed.connect(self.send_data)
+
+        # Layout setup
+        layout = QVBoxLayout()
+        layout.addWidget(self.keyword_input)
+        layout.addWidget(self.log_output)
+        layout.addWidget(self.data_input)
+
+        self.log_tab.setLayout(layout)
+
+    def setup_extra_tab(self):
+        """추가 탭을 설정합니다."""
+        layout = QVBoxLayout()
+        placeholder = QTextEdit()
+        placeholder.setReadOnly(True)
+        placeholder.setText("This tab can be used for additional functionality.")
+        layout.addWidget(placeholder)
+        self.extra_tab.setLayout(layout)
+
+    def filtered_log(self):
+        """Filters the log output based on the regular expression entered in QLineEdit."""
+        keyword = self.keyword_input.text()  # Get the keyword entered by the user
+        self.log_output.clear()  # Clear the existing output
+
+        if keyword:  # If a keyword is entered, apply regex filter
+            try:
+                # Compile the regex pattern (with case insensitivity by default)
+                pattern = re.compile(keyword, re.IGNORECASE)
+                # Filter the logs based on the compiled regex
+                filtered_text = [
+                    line for line in self.original_log if pattern.search(line['text'])
+                ]
+                # Display each filtered line
+                for line in filtered_text:
+                    self.display_line(line)
+
+            except re.error:  # Catch invalid regex patterns
+                self.log_output.append("Invalid regex pattern.")
+        else:  # No keyword entered, display all logs
+            for line in self.original_log:
+                self.display_line(line)
+
+    def display_line(self, line):
+        """Display a single line."""
+        text = line['text']
+        self.log_output.append(text)  # Display each line in QTextEdit
+
+    def show_search_dialog(self):
+        """검색 다이얼로그를 표시합니다."""
+        self.search_dialog = SearchDialog(self)
+        self.search_dialog.search_input.textChanged.connect(self.filter_log)
+        self.search_dialog.resize(700, 200)
+        self.search_dialog.show()
+
+    def filter_log(self):
+        """Filters the log output based on the keyword entered in the search dialog."""
+        keyword = self.search_dialog.search_input.text()  # Get the keyword from the search dialog
+        if keyword:  # If a keyword is entered, apply filter
+            filtered_data = []
+            for index, line in enumerate(self.original_log):
+                if keyword.lower() in line['text'].lower():
+                    # 필터링된 데이터를 하이퍼링크 형식으로 추가
+                    filtered_data.append(f'<a href="{index}">{line["text"]}</a>')
+
+            # 필터링된 데이터를 검색 다이얼로그의 QTextBrowser에 표시
+            self.search_dialog.update_filtered_log(filtered_data)
+        else:
+            # 키워드가 없으면 필터링된 로그를 숨김
+            self.search_dialog.update_filtered_log([])
+
+    def update_log(self, message):
+        """Appends message to the log output area."""
+        self.original_log.append({'text': message})  # Store the text in the original log
+        self.log_output.append(message)  # Display the log in QTextEdit
+
+    # 나머지 메서드는 그대로 유지
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_F1:  # F1 키 확인 (통신 연결)
             self.start_serial_connection()  # 통신 연결 시작
@@ -377,75 +497,11 @@ class MainWindow(QMainWindow):
         # Add the 'Settings' action to the menu
         view_menu.addAction(send_history)
 
-    def show_search_dialog(self):
-        self.dialog = SearchDialog(self)
-        self.dialog.next_signal.connect(self.find_next)
-        self.dialog.prev_signal.connect(self.find_previous)
-        self.dialog.text_changed_signal.connect(self.update_search_text)
-        self.dialog.exec()
-
-    def update_search_text(self, text):
-        """Search text를 자동으로 업데이트."""
-        self.search_text = text
-        self.current_match_index = -1  # 새로운 검색을 시작할 때마다 인덱스 리셋
-        #self.find_next()  # 텍스트가 변경될 때마다 자동으로 next 검색
-
-    def find_next(self):
-        search_text = self.dialog.search_input.text().strip()
-        if not self.search_text:
-            return
-
-        cursor = self.log_output.textCursor()
-        document = self.log_output.document()
-
-        # 현재 커서 위치에서 검색 시작
-        start_pos = cursor.position()
-        cursor = document.find(search_text, start_pos)
-
-        if cursor.isNull():
-            # 처음부터 다시 검색
-            cursor = document.find(search_text, 0)
-
-        if not cursor.isNull():
-            self.log_output.setTextCursor(cursor)
-            self.log_output.ensureCursorVisible()
-        else:
-            QMessageBox.information(self, "Search", "No matches found.")
-
-    def find_previous(self):
-        search_text = self.dialog.search_input.text()
-
-        # 처음 검색이거나 검색 텍스트가 변경된 경우
-        if search_text != self.search_text:
-            self.search_text = search_text
-        self.last_cursor_position = len(self.log_output.toPlainText())  # 새 검색은 텍스트의 끝에서 시작
-
-        print(self.last_cursor_position)
-        if search_text:
-            cursor = self.log_output.textCursor()
-            cursor.setPosition(self.last_cursor_position)  # 마지막 검색 위치에서 시작
-
-            # 역방향으로 텍스트 찾기
-            found = self.log_output.find(search_text, QTextDocument.FindBackward)
-
-            if found:
-                self.last_cursor_position = cursor.position()  # 찾은 위치 저장
-                print(f"Found '{search_text}' at position {self.last_cursor_position}")
-            else:
-                # 더 이상 찾을 수 없으면 텍스트 끝에서 다시 시작
-                print("No more occurrences found. Searching from the end again.")
-                # 텍스트 끝에서 검색을 시작하도록 커서 위치를 초기화
-                self.last_cursor_position = len(self.log_output.toPlainText())  # 텍스트 끝에서 다시 시작
-                cursor.setPosition(self.last_cursor_position)
-                self.log_output.setTextCursor(cursor)
-                self.find_previous()
-
     def send_history_fn(self):
         """ history of send data """
         self.send_data_history_dialog = SendHistoryDialog(self)
         self.send_data_history_dialog.setModal(False)
         self.send_data_history_dialog.show()
-
 
     def show_settings(self):
         """Show the serial settings dialog when the user clicks 'Settings'."""
@@ -463,44 +519,6 @@ class MainWindow(QMainWindow):
         self.serial_thread.start()  # Restart the serial thread with new settings
         self.update_log(f"Serial settings updated: Port = {port}, Baudrate = {baudrate}")
 
-    def setup_log_tab(self):
-        # Create the keyword filter input field
-        self.keyword_input = QLineEdit()
-        self.keyword_input.setPlaceholderText("Enter keyword to filter...")
-
-        # Create the QTextEdit for log output
-        self.log_output = QTextEdit()
-        self.log_output.setReadOnly(True)
-        self.log_output.setStyleSheet("background-color: black; color: gray;")
-
-        # Create the QLineEdit for data input
-        completer = QCompleter(self.send_data_history)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
-
-        self.data_input = QLineEdit()
-        self.data_input.setPlaceholderText("Enter data to send...")
-        self.data_input.setCompleter(completer)
-        self.data_input.returnPressed.connect(self.send_data)
-
-        # Connect the keyword input to filter updates
-        self.keyword_input.textChanged.connect(self.filter_log)
-
-        # Layout setup
-        layout = QVBoxLayout()
-        layout.addWidget(self.keyword_input)
-        layout.addWidget(self.log_output)
-        layout.addWidget(self.data_input)
-
-        self.log_tab.setLayout(layout)
-
-    def setup_extra_tab(self):
-        layout = QVBoxLayout()
-        placeholder = QTextEdit()
-        placeholder.setReadOnly(True)
-        placeholder.setText("This tab can be used for additional functionality.")
-        layout.addWidget(placeholder)
-        self.extra_tab.setLayout(layout)
-
     def send_data(self):
         data = self.data_input.text()
         if data:
@@ -510,7 +528,6 @@ class MainWindow(QMainWindow):
 
             # Add the data to the send_data_history
             if data not in self.send_data_history:
-                #self.send_data_history.append(data)
                 self.send_data_history.insert(0, data)
                 # Update the completer's model to include the new data
                 completer = self.data_input.completer()
@@ -519,43 +536,8 @@ class MainWindow(QMainWindow):
                 self.send_data_history.remove(data)
                 self.send_data_history.insert(0, data)
             # Save the updated send_data_history to the file
-
             self.save_send_data_history()
             self.send_data_history_dialog.load_history_from_file(self.data_file)
-
-    def update_log(self, message):
-        """Appends message to the log output area."""
-        self.original_log.append({'text': message})  # Just store the text without the 'marked' key
-        self.log_output.append(message)  # Display the log in QTextEdit
-
-    def filter_log(self):
-        """Filters the log output based on the regular expression entered in QLineEdit."""
-        keyword = self.keyword_input.text()  # Get the keyword entered by the user
-        self.log_output.clear()  # Clear the existing output
-
-        if keyword:  # If a keyword is entered, apply regex filter
-            try:
-                # Compile the regex pattern (with case insensitivity by default)
-                pattern = re.compile(keyword, re.IGNORECASE)
-                # Filter the logs based on the compiled regex
-                filtered_text = [
-                    line for line in self.original_log if pattern.search(line['text'])
-                ]
-                # Display each filtered line
-                for line in filtered_text:
-                    self.display_line(line)
-
-            except re.error:  # Catch invalid regex patterns
-                self.log_output.append("Invalid regex pattern.")
-        else:  # No keyword entered, display all logs
-            for line in self.original_log:
-                self.display_line(line)
-
-
-    def display_line(self, line):
-        """Display a single line."""
-        text = line['text']
-        self.log_output.append(text)  # Display each line in QTextEdit
 
     def save_log_to_file(self):
         """log_output의 내용을 사용자가 선택한 파일에 저장"""
@@ -596,7 +578,6 @@ class MainWindow(QMainWindow):
             self.max_log_lines = max_lines
             print(f"Max log lines set to: {self.max_log_lines}")
 
-    # 로그 추가 메서드 (최대 라인 제한 적용)
     def append_log(self, text):
         current_logs = self.log_output.toPlainText().split("\n")
         current_logs.append(text)
@@ -608,9 +589,24 @@ class MainWindow(QMainWindow):
         # 텍스트 업데이트
         self.log_output.setPlainText("\n".join(current_logs))
 
+    def move_to_line(self, line_number):
+        """Move the cursor to the specified line in the log output and highlight it."""
+        cursor = self.log_output.textCursor()
+        cursor.movePosition(QTextCursor.Start)  # Move to the start of the document
+        for _ in range(line_number):
+            cursor.movePosition(QTextCursor.Down)  # Move to the target line
+
+        # 커서를 해당 라인의 시작으로 이동
+        cursor.movePosition(QTextCursor.StartOfLine)
+        cursor.movePosition(QTextCursor.EndOfLine, QTextCursor.KeepAnchor)  # 라인 전체 선택
+        self.log_output.setTextCursor(cursor)
+
+        # 커서 위치를 화면에 표시
+        self.log_output.setFocus()
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
-    window.resize(900, 1300)
+    window.resize(800, 1300)
     window.show()
     sys.exit(app.exec())
